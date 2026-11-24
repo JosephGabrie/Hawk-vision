@@ -1,4 +1,29 @@
+import glob
+import io
+import os
+import shutil
+import subprocess
+import sys
 import time
+from threading import Condition, Thread
+import cv2
+import numpy as np
+
+# If running inside a Linux virtualenv created without --system-site-packages,
+# add the system dist-packages so Picamera2 / libcamera / gpiozero / smbus can be imported.
+if sys.platform.startswith("linux"):
+    _py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+    for _sys_pkg in (
+        "/usr/lib/python3/dist-packages",
+        f"/usr/lib/python{_py_ver}/dist-packages",
+        "/usr/local/lib/python3/dist-packages",
+    ):
+        if os.path.isdir(_sys_pkg) and _sys_pkg not in sys.path:
+            sys.path.append(_sys_pkg)
+    for _match in glob.glob("/usr/lib/python3*/dist-packages"):
+        if _match not in sys.path:
+            sys.path.append(_match)
+
 try:
     from picamera2 import Picamera2, Preview
     from picamera2.encoders import H264Encoder, JpegEncoder
@@ -7,11 +32,6 @@ try:
     _HAS_PICAMERA2 = True
 except ImportError:
     _HAS_PICAMERA2 = False
-from threading import Condition, Thread
-import io
-import sys
-import cv2
-import numpy as np
 
 class StreamingOutput(io.BufferedIOBase):
     def __init__(self):
@@ -36,13 +56,19 @@ class Camera:
         self.streaming = False
         self._cv_cap = None
         self._cv_thread = None
+        self._rpicam_proc = None
 
         if _HAS_PICAMERA2:
-            self.camera = Picamera2()
-            self.transform = Transform(hflip=1 if hflip else 0, vflip=1 if vflip else 0)
-            preview_config = self.camera.create_preview_configuration(main={"size": preview_size}, transform=self.transform)
-            self.camera.configure(preview_config)
-            self.stream_config = self.camera.create_video_configuration(main={"size": stream_size}, transform=self.transform)
+            try:
+                self.camera = Picamera2()
+                self.transform = Transform(hflip=1 if hflip else 0, vflip=1 if vflip else 0)
+                preview_config = self.camera.create_preview_configuration(main={"size": preview_size}, transform=self.transform)
+                self.camera.configure(preview_config)
+                self.stream_config = self.camera.create_video_configuration(main={"size": stream_size}, transform=self.transform)
+                print("Initialized Raspberry Pi CSI camera via Picamera2.")
+            except Exception as e:
+                print(f"Picamera2 init error ({e}), trying rpicam-vid / OpenCV fallback...")
+                self.camera = None
         else:
             self.camera = None
 
@@ -91,6 +117,49 @@ class Camera:
                 self.streaming_output.write(enc.tobytes())
             time.sleep(0.03)
 
+    def _rpicam_stream_loop(self, cmd_bin: str) -> None:
+        """Streams MJPEG frames directly from Raspberry Pi rpicam-vid / libcamera-vid stdout."""
+        w, h = self.stream_size
+        cmd = [
+            cmd_bin,
+            "-t", "0",
+            "--nopreview",
+            "--codec", "mjpeg",
+            "--width", str(w),
+            "--height", str(h),
+            "--framerate", "20",
+            "-o", "-",
+        ]
+        if self.hflip:
+            cmd.append("--hflip")
+        if self.vflip:
+            cmd.append("--vflip")
+        try:
+            self._rpicam_proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0
+            )
+            buf = bytearray()
+            while self.streaming and self._rpicam_proc.poll() is None:
+                chunk = self._rpicam_proc.stdout.read(16384)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                while True:
+                    start = buf.find(b"\xff\xd8")
+                    if start == -1:
+                        buf.clear()
+                        break
+                    end = buf.find(b"\xff\xd9", start + 2)
+                    if end == -1:
+                        if start > 0:
+                            del buf[:start]
+                        break
+                    jpg = bytes(buf[start : end + 2])
+                    del buf[: end + 2]
+                    self.streaming_output.write(jpg)
+        except Exception as e:
+            print(f"rpicam-vid stream error: {e}")
+
     def start_stream(self, filename: str = None) -> None:
         """Start the video stream or recording."""
         if not self.streaming:
@@ -107,12 +176,25 @@ class Camera:
                 self.camera.start_recording(encoder, output)
                 self.streaming = True
             else:
-                self._cv_cap = cv2.VideoCapture(0, cv2.CAP_DSHOW) if sys.platform.startswith("win") else cv2.VideoCapture(0)
-                if not self._cv_cap.isOpened():
-                    self._cv_cap = cv2.VideoCapture(0)
-                self.streaming = True
-                self._cv_thread = Thread(target=self._cv_stream_loop, daemon=True)
-                self._cv_thread.start()
+                rpicam_bin = shutil.which("rpicam-vid") or shutil.which("libcamera-vid")
+                if sys.platform.startswith("linux") and rpicam_bin is not None:
+                    print(f"Starting Raspberry Pi camera stream via {rpicam_bin}...")
+                    self.streaming = True
+                    self._cv_thread = Thread(
+                        target=self._rpicam_stream_loop, args=(rpicam_bin,), daemon=True
+                    )
+                    self._cv_thread.start()
+                else:
+                    self._cv_cap = (
+                        cv2.VideoCapture(0, cv2.CAP_DSHOW)
+                        if sys.platform.startswith("win")
+                        else cv2.VideoCapture(0)
+                    )
+                    if not self._cv_cap.isOpened():
+                        self._cv_cap = cv2.VideoCapture(0)
+                    self.streaming = True
+                    self._cv_thread = Thread(target=self._cv_stream_loop, daemon=True)
+                    self._cv_thread.start()
 
     def stop_stream(self) -> None:
         """Stop the video stream or recording."""
@@ -121,9 +203,17 @@ class Camera:
                 self.streaming = False
                 if self.camera is not None:
                     self.camera.stop_recording()
-                elif self._cv_cap is not None:
-                    if self._cv_thread is not None:
-                        self._cv_thread.join(0.5)
+                if self._rpicam_proc is not None:
+                    try:
+                        self._rpicam_proc.terminate()
+                        self._rpicam_proc.wait(timeout=1.0)
+                    except Exception:
+                        pass
+                    self._rpicam_proc = None
+                if self._cv_thread is not None:
+                    self._cv_thread.join(0.5)
+                    self._cv_thread = None
+                if self._cv_cap is not None:
                     self._cv_cap.release()
                     self._cv_cap = None
             except Exception as e:

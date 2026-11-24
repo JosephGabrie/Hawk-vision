@@ -1,0 +1,34 @@
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Precompiled vendor binaries (>100MB mac binary & windows exe)
+Application/
+
+# Training datasets & Label Studio export
+Pedestrians/
+yolo_cls_dataset/
+yolo_dataset/
+project-7-at-*.json
+
+# Sample & generated test videos / temporary images
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.jpeg
+output_*.jpg
+output_*.png
+video.jpg
+params.json
+Code/Client/video.jpg
+Code/Server/image.jpg
+Code/Server/params.json
+
+# Training batch preview images (keep trained weights & metrics!)
+runs/**/train_batch*.jpg
+runs/**/val_batch*.jpg

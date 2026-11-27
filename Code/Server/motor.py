@@ -64,6 +64,8 @@ class Ordinary_Car:
             self.pwm.set_motor_pwm(4,4095)
             self.pwm.set_motor_pwm(5,4095)
     def set_motor_model(self, duty1, duty2, duty3, duty4):
+        # Invert polarity so positive duty drives the car forward (camera-facing direction)
+        duty1, duty2, duty3, duty4 = -duty1, -duty2, -duty3, -duty4
         duty1,duty2,duty3,duty4=self.duty_range(duty1,duty2,duty3,duty4)
         self.left_upper_wheel(duty1)
         self.left_lower_wheel(duty2)

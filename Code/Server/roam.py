@@ -46,9 +46,9 @@ class RoamCar:
         self.close()
 
     def center_servo(self) -> None:
-        """Point the pan/tilt servos straight ahead."""
+        """Point the pan servo straight ahead (90°) and tilt the camera slightly UP (115°) to see standing people."""
         self.servo.set_servo_pwm('0', 90)
-        self.servo.set_servo_pwm('1', 90)
+        self.servo.set_servo_pwm('1', 115)
 
     # -------------------------------------------------------------------------
     # Movement Abstractions
@@ -95,35 +95,51 @@ class RoamCar:
 
     def go_around_left(
         self,
-        outer_speed: int = 1000,
-        inner_speed: int = 300,
+        outer_speed: int = 1100,
+        inner_speed: int = -400,
         duration: Optional[float] = None,
     ) -> None:
         """
-        Arc/curve to the left by driving the right (outer) wheels faster
-        than the left (inner) wheels.
-        If duration is provided, curves for `duration` seconds and then stops.
+        Steer around an obstacle to the left:
+        1. Pivots/turns sharply left so the car clearly clears the person's width.
+        2. Drives forward past the obstacle.
         """
-        self.motor.set_motor_model(inner_speed, inner_speed, outer_speed, outer_speed)
         if duration is not None:
-            time.sleep(duration)
+            pivot_time = min(0.75, duration * 0.45)
+            pass_time = max(0.4, duration - pivot_time)
+            # Phase 1: Sharp turn left (left wheels reverse slightly, right wheels drive forward)
+            self.motor.set_motor_model(inner_speed, inner_speed, outer_speed, outer_speed)
+            time.sleep(pivot_time)
+            # Phase 2: Drive forward past the person while gently curving back
+            self.motor.set_motor_model(600, 600, 450, 450)
+            time.sleep(pass_time)
             self.wait()
+        else:
+            self.motor.set_motor_model(inner_speed, inner_speed, outer_speed, outer_speed)
 
     def go_around_right(
         self,
-        outer_speed: int = 1000,
-        inner_speed: int = 300,
+        outer_speed: int = 1100,
+        inner_speed: int = -400,
         duration: Optional[float] = None,
     ) -> None:
         """
-        Arc/curve to the right by driving the left (outer) wheels faster
-        than the right (inner) wheels.
-        If duration is provided, curves for `duration` seconds and then stops.
+        Steer around an obstacle to the right:
+        1. Pivots/turns sharply right so the car clearly clears the person's width.
+        2. Drives forward past the obstacle.
         """
-        self.motor.set_motor_model(outer_speed, outer_speed, inner_speed, inner_speed)
         if duration is not None:
-            time.sleep(duration)
+            pivot_time = min(0.75, duration * 0.45)
+            pass_time = max(0.4, duration - pivot_time)
+            # Phase 1: Sharp turn right (left wheels drive forward, right wheels reverse slightly)
+            self.motor.set_motor_model(outer_speed, outer_speed, inner_speed, inner_speed)
+            time.sleep(pivot_time)
+            # Phase 2: Drive forward past the person while gently curving back
+            self.motor.set_motor_model(450, 450, 600, 600)
+            time.sleep(pass_time)
             self.wait()
+        else:
+            self.motor.set_motor_model(outer_speed, outer_speed, inner_speed, inner_speed)
 
     def turn_around(
         self,
@@ -208,9 +224,9 @@ class RoamCar:
         wall_threshold_cm: Optional[float] = None,
         cls_weights: Optional[str] = None,
         det_weights: Optional[str] = None,
-        conf: float = 0.4,
-        min_person_height_ratio: float = 0.25,
-        go_around_duration: float = 1.6,
+        conf: float = 0.28,
+        min_person_height_ratio: float = 0.15,
+        go_around_duration: float = 1.8,
     ) -> None:
         """
         YOLO-guided autonomous roaming mode:
@@ -273,27 +289,14 @@ class RoamCar:
         clear_streak = 0
         walk_streak = 0
         stand_streak = 0
+        frame_count = 0
 
         try:
             while True:
-                # 1. Check ultrasonic sensor for immediate wall/obstacle
-                distance = self.get_distance()
-                if distance is not None and 0 < distance < limit:
-                    print(f"[ULTRASONIC] Wall/obstacle at {distance:.1f}cm! Turning around...")
-                    self.wait(0.3)
-                    if distance < 15:
-                        self.backward(spd, duration=0.3)
-                        self.wait(0.2)
-                    self.turn_around()
-                    self.wait(0.3)
-                    self.run(half_spd)
-                    time.sleep(0.15)
-                    self.run(spd)
-                    driving = True
-                    clear_streak = 0
-                    continue
-
-                # 2. Grab latest camera frame
+                frame_count += 1
+                # 1. Grab latest camera frame & run YOLO FIRST so people standing in front
+                # of the robot are handled by YOLO (go around / wait) instead of being treated
+                # as a wall by the ultrasonic sensor.
                 if pi_cam is not None:
                     jpeg_bytes = pi_cam.get_frame()
                     frame = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -306,16 +309,26 @@ class RoamCar:
                 if frame is None:
                     continue
 
-                # 3. Run YOLO detection + standing/walking classification
+                # 2. Run YOLO detection + standing/walking classification
                 _, detections = tracker.update_and_classify_with_detections(
                     frame, det_model, cls_model, conf=conf, is_video_stream=True
                 )
 
-                # Filter for pedestrians roughly in front of the robot (center 70% of FOV)
+                distance = self.get_distance()
+                if detections:
+                    det_summary = ", ".join(
+                        f"ID={d['track_id']}:{d['action']}({d['confidence']:.0%}, x={d['center_x_norm']:.2f}, h={d['height_ratio']:.2f})"
+                        for d in detections
+                    )
+                    print(f"[Frame {frame_count:04d}] Sonic={distance}cm | Detections: {det_summary}")
+                elif frame_count % 15 == 0:
+                    print(f"[Frame {frame_count:04d}] Sonic={distance}cm | No pedestrians in view (driving={driving})")
+
+                # Filter for pedestrians roughly in front of the robot (center 80% of FOV)
                 # and large/close enough in the frame to require reaction
                 relevant = [
                     d for d in detections
-                    if 0.15 <= d["center_x_norm"] <= 0.85
+                    if 0.10 <= d["center_x_norm"] <= 0.90
                     and d["height_ratio"] >= min_person_height_ratio
                 ]
 
@@ -330,49 +343,65 @@ class RoamCar:
                     closest_walker = max(walking_people, key=lambda d: d["height_ratio"])
                     if driving:
                         print(
-                            f"[YOLO] WALKING pedestrian detected (ID={closest_walker['track_id']}, "
-                            f"conf={closest_walker['confidence']:.0%}) -> Waiting..."
+                            f"[YOLO] >>> WALKING pedestrian detected (ID={closest_walker['track_id']}, "
+                            f"conf={closest_walker['confidence']:.0%}) -> STOPPING & WAITING <<<"
                         )
                         self.wait()
                         driving = False
+                    continue
                 elif standing_people:
                     stand_streak += 1
                     walk_streak = 0
                     clear_streak = 0
-                    # Require 2 consecutive frames of standing so a momentary detection doesn't swerve immediately
-                    if stand_streak >= 2:
-                        closest_stander = max(standing_people, key=lambda d: d["height_ratio"])
-                        cx = closest_stander["center_x_norm"]
-                        self.wait(0.25)
-                        if cx >= 0.5:
-                            print(
-                                f"[YOLO] STANDING pedestrian ahead-right (ID={closest_stander['track_id']}, "
-                                f"conf={closest_stander['confidence']:.0%}) -> Going around LEFT..."
-                            )
-                            self.go_around_left(outer_speed=750, inner_speed=250, duration=go_around_duration)
-                        else:
-                            print(
-                                f"[YOLO] STANDING pedestrian ahead-left (ID={closest_stander['track_id']}, "
-                                f"conf={closest_stander['confidence']:.0%}) -> Going around RIGHT..."
-                            )
-                            self.go_around_right(outer_speed=750, inner_speed=250, duration=go_around_duration)
-                        self.wait(0.25)
-                        self.run(half_spd)
-                        time.sleep(0.15)
-                        self.run(spd)
-                        driving = True
-                        stand_streak = 0
-                else:
-                    # Path is clear of pedestrians -> require 3 consecutive clear frames before resuming
-                    clear_streak += 1
-                    walk_streak = 0
+                    closest_stander = max(standing_people, key=lambda d: d["height_ratio"])
+                    cx = closest_stander["center_x_norm"]
+                    self.wait(0.25)
+                    if cx >= 0.5:
+                        print(
+                            f"[YOLO] >>> STANDING pedestrian ahead-right (ID={closest_stander['track_id']}, "
+                            f"conf={closest_stander['confidence']:.0%}) -> GOING AROUND LEFT <<<"
+                        )
+                        self.go_around_left(outer_speed=1100, inner_speed=-400, duration=go_around_duration)
+                    else:
+                        print(
+                            f"[YOLO] >>> STANDING pedestrian ahead-left (ID={closest_stander['track_id']}, "
+                            f"conf={closest_stander['confidence']:.0%}) -> GOING AROUND RIGHT <<<"
+                        )
+                        self.go_around_right(outer_speed=1100, inner_speed=-400, duration=go_around_duration)
+                    self.wait(0.25)
+                    self.run(half_spd)
+                    time.sleep(0.15)
+                    self.run(spd)
+                    driving = True
                     stand_streak = 0
-                    if not driving and clear_streak >= 3:
-                        print("[YOLO] Pedestrian cleared -> Resuming forward drive.")
-                        self.run(half_spd)
-                        time.sleep(0.15)
-                        self.run(spd)
-                        driving = True
+                    continue
+
+                # 3. If no pedestrian is in front, check ultrasonic sensor for walls/non-person obstacles
+                if distance is not None and 0 < distance < limit:
+                    print(f"[ULTRASONIC] Wall/obstacle at {distance:.1f}cm (no person detected)! Turning around...")
+                    self.wait(0.3)
+                    if distance < 15:
+                        self.backward(spd, duration=0.3)
+                        self.wait(0.2)
+                    self.turn_around()
+                    self.wait(0.3)
+                    self.run(half_spd)
+                    time.sleep(0.15)
+                    self.run(spd)
+                    driving = True
+                    clear_streak = 0
+                    continue
+
+                # 4. Path is clear of pedestrians and walls -> require 3 consecutive clear frames before resuming
+                clear_streak += 1
+                walk_streak = 0
+                stand_streak = 0
+                if not driving and clear_streak >= 3:
+                    print("[YOLO] >>> Pedestrian cleared -> RESUMING FORWARD DRIVE <<<")
+                    self.run(half_spd)
+                    time.sleep(0.15)
+                    self.run(spd)
+                    driving = True
         finally:
             if pi_cam is not None:
                 try:

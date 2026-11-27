@@ -1,11 +1,19 @@
+import glob
+import sys
+import time
+import warnings
+
+if sys.platform.startswith("linux"):
+    for _match in glob.glob("/usr/lib/python3*/dist-packages"):
+        if _match not in sys.path:
+            sys.path.append(_match)
+
 try:
     from gpiozero import DistanceSensor, PWMSoftwareFallback, DistanceSensorNoEcho
 except ImportError:
     DistanceSensor = None
     PWMSoftwareFallback = RuntimeWarning
     DistanceSensorNoEcho = RuntimeWarning
-import warnings
-import time
 
 class Ultrasonic:
     def __init__(self, trigger_pin: int = 27, echo_pin: int = 22, max_distance: float = 3.0):

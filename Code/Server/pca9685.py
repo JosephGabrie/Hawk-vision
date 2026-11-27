@@ -1,11 +1,23 @@
 #!/usr/bin/python
 
-import time
+import glob
 import math
+import os
+import sys
+import time
+
+if sys.platform.startswith("linux"):
+    for _match in glob.glob("/usr/lib/python3*/dist-packages"):
+        if _match not in sys.path:
+            sys.path.append(_match)
+
 try:
     import smbus
 except ImportError:
-    smbus = None
+    try:
+        import smbus2 as smbus
+    except ImportError:
+        smbus = None
 
 
 class _MockSMBus:

@@ -1,5 +1,9 @@
 #!/usr/bin/python
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import glob
 import math
 import os
@@ -18,6 +22,49 @@ except ImportError:
         import smbus2 as smbus
     except ImportError:
         smbus = None
+
+
+class _LinuxI2CBus:
+    """
+    Pure-Python Linux /dev/i2c-N driver using ioctl + os.read/os.write.
+    Works inside any Python virtualenv (Python 3.11/3.12/3.13+) without needing
+    compiled python3-smbus C-extensions!
+    """
+    I2C_SLAVE = 0x0703
+
+    def __init__(self, bus: int = 1):
+        self.fd = os.open(f"/dev/i2c-{bus}", os.O_RDWR)
+        self._current_addr = None
+
+    def _select_addr(self, addr: int) -> None:
+        if self._current_addr != addr:
+            fcntl.ioctl(self.fd, self.I2C_SLAVE, addr)
+            self._current_addr = addr
+
+    def write_byte_data(self, addr: int, reg: int, val: int) -> None:
+        self._select_addr(addr)
+        os.write(self.fd, bytes([reg & 0xFF, val & 0xFF]))
+
+    def read_byte_data(self, addr: int, reg: int) -> int:
+        self._select_addr(addr)
+        os.write(self.fd, bytes([reg & 0xFF]))
+        return os.read(self.fd, 1)[0]
+
+    def write_byte(self, addr: int, val: int) -> None:
+        self._select_addr(addr)
+        os.write(self.fd, bytes([val & 0xFF]))
+
+    def read_byte(self, addr: int) -> int:
+        self._select_addr(addr)
+        return os.read(self.fd, 1)[0]
+
+    def close(self) -> None:
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except Exception:
+                pass
+            self.fd = None
 
 
 class _MockSMBus:
@@ -61,12 +108,25 @@ class PCA9685:
     __ALLLED_OFF_H       = 0xFD
 
     def __init__(self, address: int = 0x40, debug: bool = False):
+        self.bus = None
         if smbus is not None:
             try:
                 self.bus = smbus.SMBus(1)
-            except Exception:
-                self.bus = _MockSMBus(1)
-        else:
+            except Exception as e:
+                print(f"[PCA9685] smbus.SMBus(1) failed ({e}), trying /dev/i2c-1 directly...")
+                self.bus = None
+        if self.bus is None and sys.platform.startswith("linux") and os.path.exists("/dev/i2c-1"):
+            try:
+                self.bus = _LinuxI2CBus(1)
+            except Exception as e:
+                print(
+                    f"[PCA9685] WARNING: Could not open /dev/i2c-1 ({e}). "
+                    "Make sure I2C is enabled (`sudo raspi-config` -> Interface Options -> I2C)."
+                )
+                self.bus = None
+        if self.bus is None:
+            if sys.platform.startswith("linux"):
+                print("[PCA9685] WARNING: Falling back to _MockSMBus (motors will NOT spin!).")
             self.bus = _MockSMBus(1)
         self.address = address
         self.debug = debug

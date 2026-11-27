@@ -269,6 +269,11 @@ class RoamCar:
         self.run(spd)
         driving = True
 
+        # Track consecutive frames before switching between driving/waiting to avoid rapid toggling
+        clear_streak = 0
+        walk_streak = 0
+        stand_streak = 0
+
         try:
             while True:
                 # 1. Check ultrasonic sensor for immediate wall/obstacle
@@ -281,8 +286,11 @@ class RoamCar:
                         self.wait(0.2)
                     self.turn_around()
                     self.wait(0.3)
+                    self.run(half_spd)
+                    time.sleep(0.15)
                     self.run(spd)
                     driving = True
+                    clear_streak = 0
                     continue
 
                 # 2. Grab latest camera frame
@@ -314,31 +322,35 @@ class RoamCar:
                 walking_people = [d for d in relevant if d["action"] == "walking"]
                 standing_people = [d for d in relevant if d["action"] == "standing"]
 
-                if standing_people:
-                    # First check if anyone is walking -> wait for them
-                    if walking_people:
-                        closest_walker = max(walking_people, key=lambda d: d["height_ratio"])
-                        if driving:
-                            print(
-                                f"[YOLO] WALKING pedestrian detected (ID={closest_walker['track_id']}, "
-                                f"conf={closest_walker['confidence']:.0%}) -> Waiting..."
-                            )
-                            self.wait()
-                            driving = False
-                    else:
-                        # Someone is standing still in front of the robot -> go around them
+                if walking_people:
+                    walk_streak += 1
+                    stand_streak = 0
+                    clear_streak = 0
+                    # Priority 1: Someone is walking in front of the robot -> wait for them
+                    closest_walker = max(walking_people, key=lambda d: d["height_ratio"])
+                    if driving:
+                        print(
+                            f"[YOLO] WALKING pedestrian detected (ID={closest_walker['track_id']}, "
+                            f"conf={closest_walker['confidence']:.0%}) -> Waiting..."
+                        )
+                        self.wait()
+                        driving = False
+                elif standing_people:
+                    stand_streak += 1
+                    walk_streak = 0
+                    clear_streak = 0
+                    # Require 2 consecutive frames of standing so a momentary detection doesn't swerve immediately
+                    if stand_streak >= 2:
                         closest_stander = max(standing_people, key=lambda d: d["height_ratio"])
                         cx = closest_stander["center_x_norm"]
                         self.wait(0.25)
                         if cx >= 0.5:
-                            # Person is on the right half of the frame -> go around to the left
                             print(
                                 f"[YOLO] STANDING pedestrian ahead-right (ID={closest_stander['track_id']}, "
                                 f"conf={closest_stander['confidence']:.0%}) -> Going around LEFT..."
                             )
                             self.go_around_left(outer_speed=1400, inner_speed=500, duration=go_around_duration)
                         else:
-                            # Person is on the left half of the frame -> go around to the right
                             print(
                                 f"[YOLO] STANDING pedestrian ahead-left (ID={closest_stander['track_id']}, "
                                 f"conf={closest_stander['confidence']:.0%}) -> Going around RIGHT..."
@@ -349,19 +361,13 @@ class RoamCar:
                         time.sleep(0.15)
                         self.run(spd)
                         driving = True
-                elif walking_people:
-                    # Priority 1: Someone is walking in front of the robot -> wait for them
-                    closest_walker = max(walking_people, key=lambda d: d["height_ratio"])
-                    if driving:
-                        print(
-                            f"[YOLO] WALKING pedestrian detected (ID={closest_walker['track_id']}, "
-                            f"conf={closest_walker['confidence']:.0%}) -> Waiting..."
-                        )
-                        self.wait()
-                        driving = False
+                        stand_streak = 0
                 else:
-                    # Path is clear of pedestrians -> keep driving forward
-                    if not driving:
+                    # Path is clear of pedestrians -> require 3 consecutive clear frames before resuming
+                    clear_streak += 1
+                    walk_streak = 0
+                    stand_streak = 0
+                    if not driving and clear_streak >= 3:
                         print("[YOLO] Pedestrian cleared -> Resuming forward drive.")
                         self.run(half_spd)
                         time.sleep(0.15)

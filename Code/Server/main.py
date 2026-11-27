@@ -362,9 +362,9 @@ class mywindow(_BaseWindow):
         """
         dist = self.car.sonic.get_distance()
         if dist is not None and 0 < dist < 30.0:
-            self.car.motor.set_motor_model(-1200, -1200, -1200, -1200)
+            self.car.motor.set_motor_model(-600, -600, -600, -600)
             time.sleep(0.2)
-            self.car.motor.set_motor_model(1500, 1500, -1500, -1500)
+            self.car.motor.set_motor_model(750, 750, -750, -750)
             time.sleep(0.8)
             self.car.motor.set_motor_model(0, 0, 0, 0)
             return
@@ -387,17 +387,17 @@ class mywindow(_BaseWindow):
                 if self._last_yolo_action != "around_left":
                     print("[YOLO Self-Driving] STANDING pedestrian on right -> Going around LEFT...")
                     self._last_yolo_action = "around_left"
-                self.car.motor.set_motor_model(600, 600, 2000, 2000)
+                self.car.motor.set_motor_model(300, 300, 1000, 1000)
             else:
                 if self._last_yolo_action != "around_right":
                     print("[YOLO Self-Driving] STANDING pedestrian on left -> Going around RIGHT...")
                     self._last_yolo_action = "around_right"
-                self.car.motor.set_motor_model(2000, 2000, 600, 600)
+                self.car.motor.set_motor_model(1000, 1000, 300, 300)
         else:
             if self._last_yolo_action != "forward":
                 print("[YOLO Self-Driving] Path clear -> Driving forward...")
                 self._last_yolo_action = "forward"
-            self.car.motor.set_motor_model(1000, 1000, 1000, 1000)
+            self.car.motor.set_motor_model(500, 500, 500, 500)
 
 
     def set_threading_video_send(self, state, close_time=0.3):

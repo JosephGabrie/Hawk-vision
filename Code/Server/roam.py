@@ -22,8 +22,8 @@ class RoamCar:
 
     def __init__(
         self,
-        default_speed: int = 1000,
-        turn_speed: int = 1500,
+        default_speed: int = 500,
+        turn_speed: int = 750,
         turn_around_duration: float = 1.2,
         wall_threshold_cm: float = 30.0,
     ):
@@ -95,8 +95,8 @@ class RoamCar:
 
     def go_around_left(
         self,
-        outer_speed: int = 2000,
-        inner_speed: int = 600,
+        outer_speed: int = 1000,
+        inner_speed: int = 300,
         duration: Optional[float] = None,
     ) -> None:
         """
@@ -111,8 +111,8 @@ class RoamCar:
 
     def go_around_right(
         self,
-        outer_speed: int = 2000,
-        inner_speed: int = 600,
+        outer_speed: int = 1000,
+        inner_speed: int = 300,
         duration: Optional[float] = None,
     ) -> None:
         """
@@ -263,7 +263,7 @@ class RoamCar:
         print("Press Ctrl+C to stop.")
 
         # Ramp motors up gently in 2 steps to prevent battery voltage brownout on Raspberry Pi 5
-        half_spd = max(400, spd // 2)
+        half_spd = max(300, spd // 2)
         self.run(half_spd)
         time.sleep(0.15)
         self.run(spd)
@@ -349,13 +349,13 @@ class RoamCar:
                                 f"[YOLO] STANDING pedestrian ahead-right (ID={closest_stander['track_id']}, "
                                 f"conf={closest_stander['confidence']:.0%}) -> Going around LEFT..."
                             )
-                            self.go_around_left(outer_speed=1400, inner_speed=500, duration=go_around_duration)
+                            self.go_around_left(outer_speed=750, inner_speed=250, duration=go_around_duration)
                         else:
                             print(
                                 f"[YOLO] STANDING pedestrian ahead-left (ID={closest_stander['track_id']}, "
                                 f"conf={closest_stander['confidence']:.0%}) -> Going around RIGHT..."
                             )
-                            self.go_around_right(outer_speed=1400, inner_speed=500, duration=go_around_duration)
+                            self.go_around_right(outer_speed=750, inner_speed=250, duration=go_around_duration)
                         self.wait(0.25)
                         self.run(half_spd)
                         time.sleep(0.15)
@@ -620,17 +620,17 @@ if __name__ == "__main__":
                 car.free_roam()
             elif mode == "left":
                 print("Testing go_around_left (arc left for 2s)...")
-                car.go_around_left(outer_speed=2000, inner_speed=600, duration=2.0)
+                car.go_around_left(outer_speed=1000, inner_speed=300, duration=2.0)
             elif mode == "right":
                 print("Testing go_around_right (arc right for 2s)...")
-                car.go_around_right(outer_speed=2000, inner_speed=600, duration=2.0)
+                car.go_around_right(outer_speed=1000, inner_speed=300, duration=2.0)
             elif mode == "run":
                 print("Testing run (forward 1.5s) -> wait (1s) -> turn_around -> run (1.5s)...")
-                car.run(1000, duration=1.5)
+                car.run(500, duration=1.5)
                 car.wait(1.0)
                 car.turn_around()
                 car.wait(0.5)
-                car.run(1000, duration=1.5)
+                car.run(500, duration=1.5)
             elif mode == "turnaround":
                 print("Testing 180-degree turn_around...")
                 car.turn_around()
